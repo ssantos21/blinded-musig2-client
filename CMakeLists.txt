@@ -15,6 +15,12 @@ FetchContent_Declare(cpr
     GIT_TAG 2553fc41450301cd09a9271c8d2c3e0cf3546b73)
 FetchContent_MakeAvailable(cpr)
 
+FetchContent_Declare(
+    sqlite3
+    URL "https://www.sqlite.org/2023/sqlite-amalgamation-3420000.zip"
+)
+FetchContent_MakeAvailable(sqlite3)
+
 ExternalProject_Add(
     secp256k1
     GIT_REPOSITORY https://github.com/ElementsProject/secp256k1-zkp.git
@@ -35,9 +41,20 @@ ExternalProject_Add(
 add_executable(client main.cpp utils/strencodings.cpp)
 add_dependencies(client secp256k1)
 
+# Create a static library for sqlite3
+add_library(sqlite3_static STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
+target_include_directories(sqlite3_static PRIVATE ${sqlite3_SOURCE_DIR})
+target_compile_definitions(sqlite3_static PRIVATE SQLITE_API=)
+
 target_link_libraries(
     client 
-    ${SECP256K1_DIR}/.libs/libsecp256k1.a
-    cpr::cpr)
-target_include_directories(client PRIVATE ${SECP256K1_DIR}/include)
+    PRIVATE ${SECP256K1_DIR}/.libs/libsecp256k1.a
+    PRIVATE cpr::cpr
+    PRIVATE sqlite3_static)
+    
+target_include_directories(
+    client 
+    PRIVATE ${SECP256K1_DIR}/include 
+    PRIVATE ${sqlite3_SOURCE_DIR})
+
 set_property(TARGET client PROPERTY CXX_STANDARD 20)
