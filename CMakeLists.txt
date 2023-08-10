@@ -38,7 +38,7 @@ ExternalProject_Add(
 )
 
 # Wait for secp256k1 to be built before compiling main.cpp
-add_executable(client main.cpp utils/strencodings.cpp)
+add_executable(client main.cpp utils/strencodings.cpp utils/lib.cpp)
 add_dependencies(client secp256k1)
 
 # Create a static library for sqlite3

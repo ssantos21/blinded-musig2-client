@@ -2,7 +2,12 @@
 #include <openssl/rand.h>
 #include <sqlite3.h>
 
+#include "cli/CLI11.hpp"
+#include "crypto/sha256sum.h"
+#include "fmt/core.h"
+#include "nlohmann/json.hpp"
 #include "utils/include_secp256k1_zkp_lib.h"
+#include "utils/lib.h"
 #include "utils/strencodings.h"
 
 static int callback33(void* notUsed, int argc, char** argv, char** azColName) {
@@ -10,29 +15,6 @@ static int callback33(void* notUsed, int argc, char** argv, char** azColName) {
         std::cout << azColName[i] << ": " << (argv[i] ? argv[i] : "NULL") << std::endl;
     }
     return 0;
-}
-
-bool create_keypair(secp256k1_keypair &keypair) {
-
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-
-    unsigned char seckey[32];
-
-    while (1) {
-        if (RAND_bytes(seckey, sizeof(seckey)) != 1) {
-            return false;
-        }
-
-        if (secp256k1_ec_seckey_verify(ctx, seckey)) {
-            break;
-        }
-    }
-    
-    int return_val = secp256k1_keypair_create(ctx, &keypair, seckey);
-
-    secp256k1_context_destroy(ctx);
-    
-    return return_val;
 }
 
 int test_sqlite3() {
@@ -94,7 +76,48 @@ int test_sqlite3() {
     return 0;
 }
 
-int main() {
+void create_aggregated_public_key() {
+    std::cout << "create-aggregated-public-key integrated!" << std::endl;
+
+    secp256k1_keypair keypair;
+    secp256k1_pubkey server_pubkey;
+    secp256k1_xonly_pubkey aggregate_xonly_pubkey;
+    secp256k1_musig_keyagg_cache cache;
+    json res_err;
+
+     if (!create_keypair(keypair)) {
+        std::cerr << "Failed to generate a random number for the private key." << std::endl;
+        exit(1);
+    }
+
+    if (!create_aggregate_key(keypair, server_pubkey, cache, aggregate_xonly_pubkey, res_err)) {
+        std::cerr << res_err << std::endl;
+        exit(1);
+    }
+
+    if (!save_signer_data(keypair, server_pubkey, cache, aggregate_xonly_pubkey, res_err)) {
+        std::cerr << res_err << std::endl;
+        exit(1);
+    }
+
+    secp256k1_keypair r_keypair;
+    secp256k1_pubkey r_server_pubkey;
+    secp256k1_musig_keyagg_cache r_cache;
+
+
+    if (!load_signer_data(r_keypair, r_server_pubkey, r_cache, aggregate_xonly_pubkey, res_err)) {
+        std::cerr << res_err << std::endl;
+        exit(1);
+    }
+
+    std::cout << "create-aggregated-public-key end!" << std::endl;
+}
+
+const std::string COMM_CREATE_AGGREGATED_PUBLIC_KEY = "create-aggregated-public-key";
+
+int main(int argc, char **argv)
+{
+    /*
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
 
     secp256k1_keypair keypair;
@@ -120,6 +143,28 @@ int main() {
     secp256k1_context_destroy(ctx);
 
     test_sqlite3();
+    */
+
+    CLI::App app{"MuSig2 client"};
+    app.set_version_flag("--version", std::string("0.0.1"));
+    CLI::App *comm_create_aggregated_public_key = app.add_subcommand(COMM_CREATE_AGGREGATED_PUBLIC_KEY, "Request server's public key and use it to create aggregated public key.");
+
+    app.require_subcommand();
+    CLI11_PARSE(app, argc, argv);
+
+    if (app.get_subcommands().size() > 1) {
+        std::cerr << "Only one command is allowed" << std::endl;
+        return 1;
+    }
+
+    CLI::App *subcom = app.get_subcommands().at(0);
+
+    if (subcom == comm_create_aggregated_public_key) {
+        create_aggregated_public_key();
+    } else {
+        std::cerr << "Unknown command" << std::endl;
+        return 1;
+    }
     
     return 0;
 }
