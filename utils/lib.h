@@ -25,3 +25,7 @@ bool load_signer_data(
     secp256k1_musig_keyagg_cache& cache,
     const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
     json& res_err);
+
+bool load_aggregated_public_keys(
+    std::vector<secp256k1_xonly_pubkey>& aggregate_xonly_pubkeys, 
+    json& res_err);

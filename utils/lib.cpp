@@ -1,3 +1,4 @@
+#include "../crypto/sha256sum.h"
 #include "../nlohmann/json.hpp"
 #include "include_secp256k1_zkp_lib.h"
 #include "lib.h"
@@ -323,4 +324,144 @@ bool load_signer_data(
         return false;
     }
     
+}
+
+bool load_aggregated_public_keys(std::vector<secp256k1_xonly_pubkey>& aggregate_xonly_pubkeys, json& res_err) {
+    sqlite3* db;
+    char* errorMessage = 0;
+
+    // Connect to SQLite database (test.db)
+    if (sqlite3_open("wallet.db", &db)) {
+        std::string errmsg(sqlite3_errmsg(db));
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Can't open database: " + errmsg}
+        };
+        return false;
+    }
+
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+
+    sqlite3_stmt* stmt;
+    const char* querySQL = "SELECT aggregated_key FROM signer_data;";
+
+    if (sqlite3_prepare_v2(db, querySQL, -1, &stmt, NULL) != SQLITE_OK) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to execute statement"}
+        };
+        
+        secp256k1_context_destroy(ctx);
+        return false;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void* aggregate_xonly_pubkey_blob = sqlite3_column_blob(stmt, 0);
+        size_t aggregate_xonly_pubkey_blob_size = sqlite3_column_bytes(stmt, 0);
+
+        // the size of serialized xonly pubkey is 32 bytes
+        assert(aggregate_xonly_pubkey_blob_size == 32);
+
+        secp256k1_xonly_pubkey aggregate_xonly_pubkey;
+
+        int return_val = secp256k1_xonly_pubkey_parse(ctx, &aggregate_xonly_pubkey, (unsigned char*)aggregate_xonly_pubkey_blob);
+
+        if (return_val) {
+            aggregate_xonly_pubkeys.push_back(aggregate_xonly_pubkey);
+        }
+    }
+
+    // Finalize the statement
+    sqlite3_finalize(stmt);
+
+    sqlite3_close(db);
+
+    secp256k1_context_destroy(ctx);
+    return true;
+}
+
+bool sign(
+    secp256k1_context* ctx,
+    const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
+    const std::string& message,
+    json& res_err) 
+{
+    secp256k1_keypair keypair;
+    secp256k1_pubkey server_pubkey;
+    secp256k1_musig_keyagg_cache cache;
+
+    if (!load_signer_data(keypair, server_pubkey, cache, aggregate_xonly_pubkey, res_err)) {
+        return false;
+    }
+
+    std::string message_hash;
+    unsigned char msg32[32];
+
+    if (!get_sha256("execute_complete_scheme test", message_hash)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to hash the message!"}
+        };
+        return false;
+    } 
+
+    if (message_hash.size() != 64) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid message hash length. Must be 32 bytes!"}
+        };
+        return false;
+    }
+
+    if (!hex_to_bytes(message_hash, msg32)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid message hash!"}
+        };
+        return false;
+    }
+
+    unsigned char client_seckey[32];
+    secp256k1_pubkey client_pubkey;
+
+    if (!secp256k1_keypair_sec(ctx, client_seckey, &keypair)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to get the secret key from the key pair."}
+        };
+        return false;
+    }
+
+    if (!secp256k1_keypair_pub(ctx, &client_pubkey, &keypair)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to get the public key from the key pair."}
+        };
+        return false;
+    }
+
+    secp256k1_musig_secnonce client_secnonce;
+    secp256k1_musig_pubnonce client_pubnonce;
+
+    unsigned char session_id[32];
+
+    if (RAND_bytes(session_id, sizeof(session_id)) != 1) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to generate a random number for the session id!"}
+        };
+        return false;
+    }
+
+    if (!secp256k1_musig_nonce_gen(ctx, &client_secnonce, &client_pubnonce, session_id, client_seckey, &client_pubkey, msg32, NULL, NULL)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to initialize session and create the nonces!"}
+        };
+        return false;
+    }
+
+    secp256k1_musig_session session;
+    secp256k1_musig_partial_sig client_partial_sig;
+
 }
