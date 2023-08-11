@@ -3,7 +3,6 @@
 #include <sqlite3.h>
 
 #include "cli/CLI11.hpp"
-#include "crypto/sha256sum.h"
 #include "fmt/core.h"
 #include "nlohmann/json.hpp"
 #include "utils/include_secp256k1_zkp_lib.h"
@@ -138,6 +137,14 @@ void sign(std::string& aggregate_pubkey_hex, std::string& message) {
     std::cout << "aggregate_pubkey: " << aggregate_pubkey_hex << std::endl;
     std::cout << "message: " << message << std::endl;
 
+    if (aggregate_pubkey_hex.substr(0, 2) == "0x") {
+        aggregate_pubkey_hex = aggregate_pubkey_hex.substr(2);
+    }
+
+    if (message.substr(0, 2) == "0x") {
+        message = message.substr(2);
+    }
+
     std::vector<unsigned char> serialized_aggregate_xonly_pubkey = ParseHex(aggregate_pubkey_hex);
 
     secp256k1_xonly_pubkey aggregate_xonly_pubkey;
@@ -149,7 +156,12 @@ void sign(std::string& aggregate_pubkey_hex, std::string& message) {
         exit(1);
     }
 
+    json res_err;
 
+    if (!sign(ctx, aggregate_xonly_pubkey, message, res_err)) {
+        std::cerr << res_err << std::endl;
+        exit(1);
+    }
 
     secp256k1_context_destroy(ctx);
 }

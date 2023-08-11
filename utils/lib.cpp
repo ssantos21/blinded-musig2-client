@@ -464,4 +464,51 @@ bool sign(
     secp256k1_musig_session session;
     secp256k1_musig_partial_sig client_partial_sig;
 
+    unsigned char serialized_server_pubkey[33];
+
+    size_t len = sizeof(serialized_server_pubkey);
+    int return_val = secp256k1_ec_pubkey_serialize(ctx, serialized_server_pubkey, &len, &server_pubkey, SECP256K1_EC_COMPRESSED);
+    assert(return_val);
+    /* Should be the same size as the size of the output, because we passed a 33 byte array. */
+    assert(len == sizeof(serialized_server_pubkey));
+
+    auto server_public_pubkey_hex = key_to_string(serialized_server_pubkey, sizeof(serialized_server_pubkey));
+    auto msg32_hex = key_to_string(msg32, sizeof(msg32));
+
+    json params = {{ "server_public_pubkey", server_public_pubkey_hex }, {"message_hash", msg32_hex}};
+
+    cpr::Response r = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_public_nonce"}, cpr::Body{params.dump()});
+
+    if (r.status_code == 200 && r.header["content-type"] == "application/json") {
+
+        auto res_json = json::parse(r.text);
+
+        assert(res_json["server_pubnonce"].is_string());
+        std::string server_pubnonce_str = res_json["server_pubnonce"];
+
+        // Check if the string starts with 0x and remove it if necessary
+        if (server_pubnonce_str.substr(0, 2) == "0x") {
+            server_pubnonce_str = server_pubnonce_str.substr(2);
+        }
+
+        std::vector<unsigned char> server_pubnonce_serialized = ParseHex(server_pubnonce_str);
+
+        secp256k1_musig_pubnonce server_pubnonce;
+        secp256k1_musig_pubnonce_parse(ctx, &server_pubnonce, server_pubnonce_serialized.data());
+
+        auto server_pubnonce_data_hex = key_to_string(server_pubnonce.data, sizeof(server_pubnonce.data));
+        std::cout << "server_pubnonce_data_hex: " << server_pubnonce_data_hex << std::endl;
+        
+        
+    } else {
+        res_err = {
+            {"error_code", r.status_code},
+            {"error_message", r.text}
+        };
+        secp256k1_context_destroy(ctx);
+        return false;
+    }
+
+    return true;
+
 }

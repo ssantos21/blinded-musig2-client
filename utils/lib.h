@@ -1,3 +1,8 @@
+#pragma once
+
+#ifndef LIB_H
+#define LIB_H
+
 #include "include_secp256k1_zkp_lib.h"
 #include "../nlohmann/json.hpp"
 
@@ -29,3 +34,11 @@ bool load_signer_data(
 bool load_aggregated_public_keys(
     std::vector<secp256k1_xonly_pubkey>& aggregate_xonly_pubkeys, 
     json& res_err);
+
+bool sign(
+    secp256k1_context* ctx,
+    const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
+    const std::string& message,
+    json& res_err);
+
+#endif // LIB_H
