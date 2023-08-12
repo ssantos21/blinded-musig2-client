@@ -106,8 +106,6 @@ void list_aggregated_public_keys() {
 }
 
 void create_aggregated_public_key() {
-    std::cout << "create-aggregated-public-key integrated!" << std::endl;
-
     secp256k1_keypair keypair;
     secp256k1_pubkey server_pubkey;
     secp256k1_xonly_pubkey aggregate_xonly_pubkey;
@@ -115,7 +113,11 @@ void create_aggregated_public_key() {
     json res_err;
 
      if (!create_keypair(keypair)) {
-        std::cerr << "Failed to generate a random number for the private key." << std::endl;
+        res_err = {
+            {"error_code", 500},
+            {"error_message", "Failed to generate a random number for the private key."}
+        };
+        std::cerr << res_err << std::endl;
         exit(1);
     }
 
@@ -129,7 +131,15 @@ void create_aggregated_public_key() {
         exit(1);
     }
 
-    std::cout << "create-aggregated-public-key end!" << std::endl;
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+
+    unsigned char serialized_aggregate_xonly_pubkey[32];
+    int return_val = secp256k1_xonly_pubkey_serialize(ctx, serialized_aggregate_xonly_pubkey, &aggregate_xonly_pubkey);
+    assert(return_val);
+
+    json response = {{ "aggregate_xonly_pubkey", key_to_string(serialized_aggregate_xonly_pubkey, sizeof(serialized_aggregate_xonly_pubkey)) }};
+
+    std::cout << response << std::endl;
 }
 
 void sign(std::string& aggregate_pubkey_hex, std::string& message) {

@@ -208,10 +208,12 @@ bool save_signer_data(
     sqlite3_stmt* stmt;
     const char* insertSQL = "INSERT INTO signer_data(keypair, server_pubkey, aggregated_key, cache) VALUES(?, ?, ?, ?);";
 
+/*
     std::cout <<  "keypair: " << key_to_string(keypair.data, sizeof(keypair.data)) << std::endl;
     std::cout <<  "server_pubkey: " << key_to_string(serialized_server_pubkey, sizeof(serialized_server_pubkey)) << std::endl;
     std::cout <<  "aggregate_xonly_pubkey: " << key_to_string(serialized_aggregate_xonly_pubkey, sizeof(serialized_aggregate_xonly_pubkey)) << std::endl;
     std::cout <<  "cache: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;
+*/
 
     if (sqlite3_prepare_v2(db, insertSQL, -1, &stmt, NULL) == SQLITE_OK) {
 
@@ -286,10 +288,11 @@ bool load_signer_data(
         size_t server_pubkey_blob_size = sqlite3_column_bytes(stmt, 1);
         size_t cache_blob_size = sqlite3_column_bytes(stmt, 2);
 
+/*
         std::cout << "keypair_blob_size: " << keypair_blob_size << std::endl;
         std::cout << "server_pubkey_blob_size: " << server_pubkey_blob_size << std::endl;
         std::cout << "cache_blob_size: " << cache_blob_size << std::endl;
-
+*/
         unsigned char serialized_server_pubkey[33];
 
         assert(keypair_blob_size == sizeof(keypair.data));
@@ -302,9 +305,9 @@ bool load_signer_data(
 
         memset(server_pubkey.data, 0, sizeof(server_pubkey.data));
 
-        std::cout <<  "keypair: " << key_to_string(keypair.data, sizeof(keypair.data)) << std::endl;
+        // std::cout <<  "keypair: " << key_to_string(keypair.data, sizeof(keypair.data)) << std::endl;
         std::cout <<  "server_pubkey: " << key_to_string(serialized_server_pubkey, sizeof(serialized_server_pubkey)) << std::endl;
-        std::cout <<  "cache: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;
+        // std::cout <<  "cache: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;
 
         return_val = secp256k1_ec_pubkey_parse(ctx, &server_pubkey, serialized_server_pubkey, sizeof(serialized_server_pubkey));
 
@@ -461,9 +464,6 @@ bool sign(
         return false;
     }
 
-    secp256k1_musig_session session;
-    secp256k1_musig_partial_sig client_partial_sig;
-
     unsigned char serialized_server_pubkey[33];
 
     size_t len = sizeof(serialized_server_pubkey);
@@ -479,28 +479,8 @@ bool sign(
 
     cpr::Response r = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_public_nonce"}, cpr::Body{params.dump()});
 
-    if (r.status_code == 200 && r.header["content-type"] == "application/json") {
+    if (r.status_code != 200 || r.header["content-type"] != "application/json") {
 
-        auto res_json = json::parse(r.text);
-
-        assert(res_json["server_pubnonce"].is_string());
-        std::string server_pubnonce_str = res_json["server_pubnonce"];
-
-        // Check if the string starts with 0x and remove it if necessary
-        if (server_pubnonce_str.substr(0, 2) == "0x") {
-            server_pubnonce_str = server_pubnonce_str.substr(2);
-        }
-
-        std::vector<unsigned char> server_pubnonce_serialized = ParseHex(server_pubnonce_str);
-
-        secp256k1_musig_pubnonce server_pubnonce;
-        secp256k1_musig_pubnonce_parse(ctx, &server_pubnonce, server_pubnonce_serialized.data());
-
-        auto server_pubnonce_data_hex = key_to_string(server_pubnonce.data, sizeof(server_pubnonce.data));
-        std::cout << "server_pubnonce_data_hex: " << server_pubnonce_data_hex << std::endl;
-        
-        
-    } else {
         res_err = {
             {"error_code", r.status_code},
             {"error_message", r.text}
@@ -509,6 +489,71 @@ bool sign(
         return false;
     }
 
-    return true;
+    auto res_json = json::parse(r.text);
 
+    assert(res_json["server_pubnonce"].is_string());
+    std::string server_pubnonce_str = res_json["server_pubnonce"];
+
+    // Check if the string starts with 0x and remove it if necessary
+    if (server_pubnonce_str.substr(0, 2) == "0x") {
+        server_pubnonce_str = server_pubnonce_str.substr(2);
+    }
+
+    std::vector<unsigned char> server_pubnonce_serialized = ParseHex(server_pubnonce_str);
+
+    secp256k1_musig_pubnonce server_pubnonce;
+    secp256k1_musig_pubnonce_parse(ctx, &server_pubnonce, server_pubnonce_serialized.data());
+
+    auto server_pubnonce_data_hex = key_to_string(server_pubnonce.data, sizeof(server_pubnonce.data));
+    std::cout << "server_pubnonce_data_hex: " << server_pubnonce_data_hex << std::endl;
+    
+    secp256k1_musig_aggnonce agg_pubnonce;
+
+    const secp256k1_musig_pubnonce *pubnonces[2];
+    pubnonces[0] = &server_pubnonce;
+    pubnonces[1] = &client_pubnonce;
+
+    if (!secp256k1_musig_nonce_agg(ctx, &agg_pubnonce, pubnonces, 2)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to create aggregate nonce!"}
+        };
+        secp256k1_context_destroy(ctx);
+        return false;
+    }
+
+    secp256k1_musig_session session;
+
+    if (!secp256k1_musig_nonce_process(ctx, &session, &agg_pubnonce, msg32, &cache, NULL)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to initialize the session!"}
+        };
+        secp256k1_context_destroy(ctx);
+        return false;
+    }
+
+    secp256k1_musig_partial_sig partial_sig;
+
+    if (!secp256k1_musig_partial_sign(ctx, &partial_sig, &client_secnonce, &keypair, &cache, &session)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to produce a partial signature!"}
+        };
+        return false;
+    }
+
+    if (!secp256k1_musig_partial_sig_verify(ctx, &partial_sig, &client_pubnonce, &client_pubkey, &cache, &session)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to verify the partial signature!"}
+        };
+        return false;
+    }
+
+    std::cout << "session.data: " << key_to_string(session.data, sizeof(session.data)) << std::endl;
+    std::cout << "partial_sig.data: " << key_to_string(partial_sig.data, sizeof(partial_sig.data)) << std::endl; 
+    std::cout << "cache.data: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;   
+        
+    return true;
 }
