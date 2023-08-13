@@ -39,6 +39,7 @@ bool sign(
     secp256k1_context* ctx,
     const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
     const std::string& message,
+    unsigned char* sig,
     json& res_err);
 
 #endif // LIB_H

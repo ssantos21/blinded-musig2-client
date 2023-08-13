@@ -167,13 +167,19 @@ void sign(std::string& aggregate_pubkey_hex, std::string& message) {
     }
 
     json res_err;
+    unsigned char sig[64];
 
-    if (!sign(ctx, aggregate_xonly_pubkey, message, res_err)) {
+    if (!sign(ctx, aggregate_xonly_pubkey, message, sig, res_err)) {
         std::cerr << res_err << std::endl;
+        secp256k1_context_destroy(ctx);
         exit(1);
     }
 
     secp256k1_context_destroy(ctx);
+
+    json response = {{ "signature", key_to_string(sig, sizeof(sig)) }};
+
+    std::cout << response << std::endl;
 }
 
 const std::string COMM_CREATE_AGGREGATED_PUBLIC_KEY = "create-aggregated-public-key";

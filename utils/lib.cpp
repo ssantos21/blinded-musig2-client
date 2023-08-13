@@ -387,6 +387,7 @@ bool sign(
     secp256k1_context* ctx,
     const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
     const std::string& message,
+    unsigned char* sig,
     json& res_err) 
 {
     secp256k1_keypair keypair;
@@ -518,7 +519,6 @@ bool sign(
             {"error_code", 1},
             {"error_message", "Failed to create aggregate nonce!"}
         };
-        secp256k1_context_destroy(ctx);
         return false;
     }
 
@@ -529,13 +529,12 @@ bool sign(
             {"error_code", 1},
             {"error_message", "Failed to initialize the session!"}
         };
-        secp256k1_context_destroy(ctx);
         return false;
     }
 
-    secp256k1_musig_partial_sig partial_sig;
+    secp256k1_musig_partial_sig client_partial_sig;
 
-    if (!secp256k1_musig_partial_sign(ctx, &partial_sig, &client_secnonce, &keypair, &cache, &session)) {
+    if (!secp256k1_musig_partial_sign(ctx, &client_partial_sig, &client_secnonce, &keypair, &cache, &session)) {
         res_err = {
             {"error_code", 1},
             {"error_message", "Failed to produce a partial signature!"}
@@ -543,7 +542,7 @@ bool sign(
         return false;
     }
 
-    if (!secp256k1_musig_partial_sig_verify(ctx, &partial_sig, &client_pubnonce, &client_pubkey, &cache, &session)) {
+    if (!secp256k1_musig_partial_sig_verify(ctx, &client_partial_sig, &client_pubnonce, &client_pubkey, &cache, &session)) {
         res_err = {
             {"error_code", 1},
             {"error_message", "Failed to verify the partial signature!"}
@@ -551,9 +550,61 @@ bool sign(
         return false;
     }
 
-    std::cout << "session.data: " << key_to_string(session.data, sizeof(session.data)) << std::endl;
-    std::cout << "partial_sig.data: " << key_to_string(partial_sig.data, sizeof(partial_sig.data)) << std::endl; 
-    std::cout << "cache.data: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;   
+    // std::cout << "session.data: " << key_to_string(session.data, sizeof(session.data)) << std::endl;
+    // std::cout << "partial_sig.data: " << key_to_string(client_partial_sig.data, sizeof(client_partial_sig.data)) << std::endl; 
+    // std::cout << "cache.data: " << key_to_string(cache.data, sizeof(cache.data)) << std::endl;
+
+    json second_params = {
+        { "server_public_pubkey", server_public_pubkey_hex }, 
+        { "cache", key_to_string(cache.data, sizeof(cache.data))},
+        { "session", key_to_string(session.data, sizeof(session.data))}
+    };
+
+    cpr::Response second_response = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_partial_signature"}, cpr::Body{second_params.dump()});
         
+    if (second_response.status_code != 200 || second_response.header["content-type"] != "application/json") {
+
+        res_err = {
+            {"error_code", second_response.status_code},
+            {"error_message", second_response.text}
+        };
+        return false;
+    }
+
+    auto second_res_json = json::parse(second_response.text);
+
+    assert(second_res_json["partial_sig"].is_string());
+    std::string server_partial_sig_hex = second_res_json["partial_sig"];
+
+    std::cout << "server_partial_sig_str: " << server_partial_sig_hex << std::endl;
+
+    // Check if the string starts with 0x and remove it if necessary
+    if (server_partial_sig_hex.substr(0, 2) == "0x") {
+        server_partial_sig_hex = server_partial_sig_hex.substr(2);
+    }
+
+    std::vector<unsigned char> server_partial_sig_serialized = ParseHex(server_partial_sig_hex);
+
+    secp256k1_musig_partial_sig server_partial_sig;
+    return_val = secp256k1_musig_partial_sig_parse(ctx, &server_partial_sig, server_partial_sig_serialized.data());
+    assert(return_val);
+
+    const secp256k1_musig_partial_sig *partial_sigs[2];
+
+    partial_sigs[0] = &client_partial_sig;
+    partial_sigs[1] = &server_partial_sig;
+
+    // unsigned char sig[64];
+    return_val = secp256k1_musig_partial_sig_agg(ctx, sig, &session, partial_sigs, 2);
+    assert(return_val);
+
+    if (!secp256k1_schnorrsig_verify(ctx, sig, msg32, sizeof(msg32), &aggregate_xonly_pubkey)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid signature."}
+        };
+        return false;
+    }
+
     return true;
 }
