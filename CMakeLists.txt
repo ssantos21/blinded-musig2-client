@@ -23,8 +23,8 @@ FetchContent_MakeAvailable(sqlite3)
 
 ExternalProject_Add(
     secp256k1
-    GIT_REPOSITORY https://github.com/ElementsProject/secp256k1-zkp.git
-    GIT_TAG master
+    GIT_REPOSITORY https://github.com/ssantos21/secp256k1-zkp
+    GIT_TAG blinded-musig-scheme
     UPDATE_COMMAND ""
     
     PREFIX ${CMAKE_BINARY_DIR}/_deps

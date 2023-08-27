@@ -608,3 +608,256 @@ bool sign(
 
     return true;
 }
+
+bool blinded_sign(
+    secp256k1_context* ctx,
+    const secp256k1_xonly_pubkey& aggregate_xonly_pubkey, 
+    const std::string& message,
+    unsigned char* sig,
+    json& res_err) 
+{
+    secp256k1_keypair keypair;
+    secp256k1_pubkey server_pubkey;
+    secp256k1_musig_keyagg_cache cache;
+
+    unsigned char blinding_factor[32];
+    unsigned char keyaggcoef[32];
+    int negate_seckey;
+
+    if (!load_signer_data(keypair, server_pubkey, cache, aggregate_xonly_pubkey, res_err)) {
+        return false;
+    }
+
+    std::string message_hash;
+    unsigned char msg32[32];
+
+    if (!get_sha256("execute_complete_scheme test", message_hash)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to hash the message!"}
+        };
+        return false;
+    } 
+
+    if (message_hash.size() != 64) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid message hash length. Must be 32 bytes!"}
+        };
+        return false;
+    }
+
+    if (!hex_to_bytes(message_hash, msg32)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid message hash!"}
+        };
+        return false;
+    }
+
+    unsigned char client_seckey[32];
+    secp256k1_pubkey client_pubkey;
+
+    if (!secp256k1_keypair_sec(ctx, client_seckey, &keypair)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to get the secret key from the key pair."}
+        };
+        return false;
+    }
+
+    if (!secp256k1_keypair_pub(ctx, &client_pubkey, &keypair)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to get the public key from the key pair."}
+        };
+        return false;
+    }
+
+    secp256k1_musig_secnonce client_secnonce;
+    secp256k1_musig_pubnonce client_pubnonce;
+
+    unsigned char session_id[32];
+
+    if (RAND_bytes(session_id, sizeof(session_id)) != 1) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to generate a random number for the session id!"}
+        };
+        return false;
+    }
+
+    if (!secp256k1_musig_nonce_gen(ctx, &client_secnonce, &client_pubnonce, session_id, client_seckey, &client_pubkey, msg32, NULL, NULL)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to initialize session and create the nonces!"}
+        };
+        return false;
+    }
+
+    unsigned char serialized_server_pubkey[33];
+
+    size_t len = sizeof(serialized_server_pubkey);
+    int return_val = secp256k1_ec_pubkey_serialize(ctx, serialized_server_pubkey, &len, &server_pubkey, SECP256K1_EC_COMPRESSED);
+    assert(return_val);
+    /* Should be the same size as the size of the output, because we passed a 33 byte array. */
+    assert(len == sizeof(serialized_server_pubkey));
+
+    auto server_public_pubkey_hex = key_to_string(serialized_server_pubkey, sizeof(serialized_server_pubkey));
+    auto msg32_hex = key_to_string(msg32, sizeof(msg32));
+
+    json params = {{ "server_public_pubkey", server_public_pubkey_hex }, {"message_hash", msg32_hex}};
+
+    cpr::Response r = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_public_nonce"}, cpr::Body{params.dump()});
+
+    if (r.status_code != 200 || r.header["content-type"] != "application/json") {
+
+        res_err = {
+            {"error_code", r.status_code},
+            {"error_message", r.text}
+        };
+        secp256k1_context_destroy(ctx);
+        return false;
+    }
+
+    auto res_json = json::parse(r.text);
+
+    assert(res_json["server_pubnonce"].is_string());
+    std::string server_pubnonce_str = res_json["server_pubnonce"];
+
+    // Check if the string starts with 0x and remove it if necessary
+    if (server_pubnonce_str.substr(0, 2) == "0x") {
+        server_pubnonce_str = server_pubnonce_str.substr(2);
+    }
+
+    std::vector<unsigned char> server_pubnonce_serialized = ParseHex(server_pubnonce_str);
+
+    secp256k1_musig_pubnonce server_pubnonce;
+    secp256k1_musig_pubnonce_parse(ctx, &server_pubnonce, server_pubnonce_serialized.data());
+
+    auto server_pubnonce_data_hex = key_to_string(server_pubnonce.data, sizeof(server_pubnonce.data));
+    std::cout << "server_pubnonce_data_hex: " << server_pubnonce_data_hex << std::endl;
+    
+    secp256k1_musig_aggnonce agg_pubnonce;
+
+    const secp256k1_musig_pubnonce *pubnonces[2];
+    pubnonces[0] = &server_pubnonce;
+    pubnonces[1] = &client_pubnonce;
+
+    if (!secp256k1_musig_nonce_agg(ctx, &agg_pubnonce, pubnonces, 2)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to create aggregate nonce!"}
+        };
+        return false;
+    }
+
+    if (RAND_bytes(blinding_factor, sizeof(blinding_factor)) != 1) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to create the blinding factor!"}
+        };
+        return false;
+    }
+
+    secp256k1_musig_session session;
+
+    if (!secp256k1_blinded_musig_nonce_process(ctx, &session, &agg_pubnonce, msg32, &cache, NULL, blinding_factor)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to initialize the session!"}
+        };
+        return false;
+    }
+
+    secp256k1_musig_partial_sig client_partial_sig;
+
+    if (!secp256k1_musig_partial_sign(ctx, &client_partial_sig, &client_secnonce, &keypair, &cache, &session)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to produce a partial signature!"}
+        };
+        return false;
+    }
+
+    if (!secp256k1_musig_partial_sig_verify(ctx, &client_partial_sig, &client_pubnonce, &client_pubkey, &cache, &session)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to verify the client partial signature!"}
+        };
+        return false;
+    }
+
+    if (!secp256k1_musig_get_keyaggcoef_and_negation_seckey(ctx, keyaggcoef, &negate_seckey, &cache, &server_pubkey)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to calculate server key aggregation coefficient!"}
+        };
+        return false;
+    }
+
+    json second_params = {
+        { "server_public_pubkey", server_public_pubkey_hex }, 
+        { "keyaggcoef", key_to_string(keyaggcoef, sizeof(keyaggcoef))},
+        { "negate_seckey", negate_seckey},
+        { "session", key_to_string(session.data, sizeof(session.data))}
+    };
+
+    std::cout << "second_params: " << second_params << std::endl;
+
+    cpr::Response second_response = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_blinded_partial_signature"}, cpr::Body{second_params.dump()});
+
+    if (second_response.status_code != 200 || second_response.header["content-type"] != "application/json") {
+
+        res_err = {
+            {"error_code", second_response.status_code},
+            {"error_message", second_response.text}
+        };
+        return false;
+    }
+
+    auto second_res_json = json::parse(second_response.text);
+
+    assert(second_res_json["partial_sig"].is_string());
+    std::string server_partial_sig_hex = second_res_json["partial_sig"];
+
+    std::cout << "server_partial_sig_str: " << server_partial_sig_hex << std::endl;
+
+    // Check if the string starts with 0x and remove it if necessary
+    if (server_partial_sig_hex.substr(0, 2) == "0x") {
+        server_partial_sig_hex = server_partial_sig_hex.substr(2);
+    }
+
+    std::vector<unsigned char> server_partial_sig_serialized = ParseHex(server_partial_sig_hex);
+
+    secp256k1_musig_partial_sig server_partial_sig;
+    return_val = secp256k1_musig_partial_sig_parse(ctx, &server_partial_sig, server_partial_sig_serialized.data());
+    assert(return_val);
+
+    if (!secp256k1_musig_partial_sig_verify(ctx, &server_partial_sig, &server_pubnonce, &server_pubkey, &cache, &session)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Failed to verify the server partial signature!"}
+        };
+        return false;
+    }
+
+    const secp256k1_musig_partial_sig *partial_sigs[2];
+
+    partial_sigs[0] = &client_partial_sig;
+    partial_sigs[1] = &server_partial_sig;
+
+    // unsigned char sig[64];
+    return_val = secp256k1_musig_partial_sig_agg(ctx, sig, &session, partial_sigs, 2);
+    assert(return_val);
+
+    if (!secp256k1_schnorrsig_verify(ctx, sig, msg32, sizeof(msg32), &aggregate_xonly_pubkey)) {
+        res_err = {
+            {"error_code", 1},
+            {"error_message", "Invalid signature."}
+        };
+        return false;
+    }
+
+    return true;
+}
