@@ -1,13 +1,16 @@
 ## Musig2 client
 
+Before using this client, make sure you have the [server](https://github.com/ssantos21/blinded-musig-sgx-server) running.
 
 ```
-$ git clone https://github.com/ssantos21/musig2_client.git
-$ cd musig2_client
+$ git clone https://github.com/ssantos21/blinded-musig2-client.git
+$ cd blinded-musig2-client
 $ cd build
 $ cmake ..
 $ make
-$ ./client execute-complete-scheme
+$ ./client create-aggregated-public-key
+{"aggregate_xonly_pubkey":"<pub-key>"}
+$ ./client sign -a <pub-key> -m Teste
 ```
 
 ### VSCode
