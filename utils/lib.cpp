@@ -560,7 +560,7 @@ bool sign(
         { "session", key_to_string(session.data, sizeof(session.data))}
     };
 
-    cpr::Response second_response = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_blinded_partial_signature"}, cpr::Body{second_params.dump()});
+    cpr::Response second_response = cpr::Post(cpr::Url{"http://0.0.0.0:18080/get_partial_signature"}, cpr::Body{second_params.dump()});
 
     if (second_response.status_code != 200 || second_response.header["content-type"] != "application/json") {
 
